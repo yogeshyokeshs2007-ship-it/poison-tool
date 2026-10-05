@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import express, { type Request, type Response } from 'express';
 import { randomUUID } from 'node:crypto';
-import { dataStore, type SeedData } from '../db';
+import { dataStore, type SeedData } from '../db.ts';
 import type {
   Decision,
   HistoryItem,
