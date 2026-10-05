@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Settings, Shield, Server, Laptop, RefreshCw, Check } from 'lucide-react';
+import { api } from '../api/client';
 
 interface SettingsViewProps {
   onShowToast: (msg: string, type?: 'info' | 'success' | 'warning' | 'error') => void;
@@ -20,9 +21,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onShowToast, onRefre
 
   const handleResetData = async () => {
     try {
-      const res = await fetch('/api/reset', { method: 'POST' });
-      const result: { error?: string } = await res.json();
-      if (!res.ok) throw new Error(result.error || 'Failed to reset data');
+      await api.resetData();
       onRefreshData();
       onShowToast('Database reset to initial demo state', 'info');
     } catch (error: unknown) {

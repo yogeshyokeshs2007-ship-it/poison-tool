@@ -23,16 +23,40 @@ interface ApiEnvelope<T> {
   error?: string;
 }
 
+async function readApiResponse<T>(response: Response, fallback: string): Promise<ApiEnvelope<T>> {
+  const body = await response.text();
+  let payload: ApiEnvelope<T> | undefined;
+
+  try {
+    payload = JSON.parse(body) as ApiEnvelope<T>;
+  } catch {
+    // Vercel and other proxies may return plain text or HTML for runtime errors.
+  }
+
+  if (!response.ok) {
+    const detail = payload?.error || body.trim().slice(0, 300);
+    throw new Error(
+      detail
+        ? `Backend error (HTTP ${response.status}): ${detail}`
+        : `${fallback} (HTTP ${response.status})`
+    );
+  }
+
+  if (!payload) {
+    throw new Error(`${fallback}: backend returned a non-JSON response (HTTP ${response.status})`);
+  }
+
+  return payload;
+}
+
 async function getApiData<T>(response: Response, fallback: string): Promise<T> {
-  const payload: ApiEnvelope<T> = await response.json();
-  if (!response.ok) throw new Error(payload.error || fallback);
+  const payload = await readApiResponse<T>(response, fallback);
   if (payload.data === undefined) throw new Error(fallback);
   return payload.data;
 }
 
 async function checkApiResponse(response: Response, fallback: string): Promise<void> {
-  const payload: ApiEnvelope<never> = await response.json();
-  if (!response.ok) throw new Error(payload.error || fallback);
+  await readApiResponse<never>(response, fallback);
 }
 
 export const api = {
@@ -69,6 +93,10 @@ export const api = {
 
   async clearLogs(): Promise<void> {
     await checkApiResponse(await fetch('/api/logs/clear', { method: 'POST' }), 'Failed to clear logs');
+  },
+
+  async resetData(): Promise<void> {
+    await checkApiResponse(await fetch('/api/reset', { method: 'POST' }), 'Failed to reset data');
   },
 
   async sendRequest(requestText: string, selectedTool?: string): Promise<ExecuteRequestResult> {
