@@ -585,11 +585,21 @@ app.get('/api/health', asyncRoute(async (_req, res) => {
 
 app.use((error: unknown, _req: Request, res: Response, _next: (error?: unknown) => void) => {
   const message = error instanceof Error ? error.message : 'Unknown backend error';
+  const errorCode =
+    typeof error === 'object' && error !== null && 'code' in error && typeof error.code === 'string'
+      ? error.code
+      : undefined;
   console.error('[API] Request failed:', message);
   const missingDatabase = message.includes('DATABASE_URL is required');
-  res.status(missingDatabase ? 503 : 500).json({
+  const invalidDatabaseCredentials =
+    errorCode === '28P01' || /password authentication failed/i.test(message);
+  res.status(missingDatabase || invalidDatabaseCredentials ? 503 : 500).json({
     success: false,
-    error: missingDatabase ? message : 'The backend could not complete the request.'
+    error: missingDatabase
+      ? message
+      : invalidDatabaseCredentials
+        ? 'PostgreSQL rejected the DATABASE_URL credentials. Check the Supabase database password and pooler username in Vercel, then redeploy.'
+        : 'The backend could not complete the request.'
   });
 });
 
