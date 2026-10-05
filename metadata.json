@@ -1,0 +1,6 @@
+{
+  "name": "TrustFlow — General Agent Dashboard",
+  "description": "Secure AI Tool Usage with Verification Dashboard featuring React frontend and Node.js Express backend API.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
