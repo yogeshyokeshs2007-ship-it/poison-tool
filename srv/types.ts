@@ -9,6 +9,7 @@ export interface MetricData {
   member1Status: 'CONNECTED' | 'DISCONNECTED';
   member2Status: 'CONNECTED' | 'DISCONNECTED';
   avgLatencyMs: number;
+  databaseStatus?: 'CONNECTED' | 'MEMORY';
 }
 
 export interface ToolItem {

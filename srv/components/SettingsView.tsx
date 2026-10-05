@@ -21,12 +21,12 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onShowToast, onRefre
   const handleResetData = async () => {
     try {
       const res = await fetch('/api/reset', { method: 'POST' });
-      if (res.ok) {
-        onRefreshData();
-        onShowToast('Database reset to initial demo state', 'info');
-      }
-    } catch {
-      onShowToast('Failed to reset data', 'error');
+      const result: { error?: string } = await res.json();
+      if (!res.ok) throw new Error(result.error || 'Failed to reset data');
+      onRefreshData();
+      onShowToast('Database reset to initial demo state', 'info');
+    } catch (error: unknown) {
+      onShowToast(error instanceof Error ? error.message : 'Failed to reset data', 'error');
     }
   };
 

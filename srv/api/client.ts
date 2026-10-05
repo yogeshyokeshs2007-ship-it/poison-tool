@@ -18,20 +18,31 @@ export interface ExecuteRequestResult {
   }[];
 }
 
+interface ApiEnvelope<T> {
+  data?: T;
+  error?: string;
+}
+
+async function getApiData<T>(response: Response, fallback: string): Promise<T> {
+  const payload: ApiEnvelope<T> = await response.json();
+  if (!response.ok) throw new Error(payload.error || fallback);
+  if (payload.data === undefined) throw new Error(fallback);
+  return payload.data;
+}
+
+async function checkApiResponse(response: Response, fallback: string): Promise<void> {
+  const payload: ApiEnvelope<never> = await response.json();
+  if (!response.ok) throw new Error(payload.error || fallback);
+}
+
 export const api = {
   async getMetrics(): Promise<MetricData> {
-    const res = await fetch('/api/metrics');
-    if (!res.ok) throw new Error('Failed to fetch metrics');
-    const json = await res.json();
-    return json.data;
+    return getApiData(await fetch('/api/metrics'), 'Failed to fetch metrics');
   },
 
   async getTools(category?: string): Promise<ToolItem[]> {
-    const url = category && category !== 'all' ? `/api/tools?category=${encodeURIComponent(category)}` : '/api/tools';
-    const res = await fetch(url);
-    if (!res.ok) throw new Error('Failed to fetch tools');
-    const json = await res.json();
-    return json.data;
+    const url = category && category !== 'all' ? '/api/tools?category=' + encodeURIComponent(category) : '/api/tools';
+    return getApiData(await fetch(url), 'Failed to fetch tools');
   },
 
   async getHistory(params?: { search?: string; filter?: string; tool?: string }): Promise<HistoryItem[]> {
@@ -39,63 +50,40 @@ export const api = {
     if (params?.search) query.append('search', params.search);
     if (params?.filter) query.append('filter', params.filter);
     if (params?.tool) query.append('tool', params.tool);
-
-    const url = `/api/history${query.toString() ? `?${query.toString()}` : ''}`;
-    const res = await fetch(url);
-    if (!res.ok) throw new Error('Failed to fetch request history');
-    const json = await res.json();
-    return json.data;
+    const url = '/api/history' + (query.toString() ? '?' + query.toString() : '');
+    return getApiData(await fetch(url), 'Failed to fetch request history');
   },
 
   async getHistoryById(id: string): Promise<HistoryItem & { verification?: VerificationRecord }> {
-    const res = await fetch(`/api/history/${encodeURIComponent(id)}`);
-    if (!res.ok) throw new Error(`Failed to fetch request ${id}`);
-    const json = await res.json();
-    return json.data;
+    return getApiData(await fetch('/api/history/' + encodeURIComponent(id)), 'Failed to fetch request ' + id);
   },
 
   async getVerifications(): Promise<VerificationRecord[]> {
-    const res = await fetch('/api/verifications');
-    if (!res.ok) throw new Error('Failed to fetch verifications');
-    const json = await res.json();
-    return json.data;
+    return getApiData(await fetch('/api/verifications'), 'Failed to fetch verifications');
   },
 
   async getLogs(level?: string): Promise<LogEntry[]> {
-    const url = level && level !== 'ALL' ? `/api/logs?level=${encodeURIComponent(level)}` : '/api/logs';
-    const res = await fetch(url);
-    if (!res.ok) throw new Error('Failed to fetch system logs');
-    const json = await res.json();
-    return json.data;
+    const url = level && level !== 'ALL' ? '/api/logs?level=' + encodeURIComponent(level) : '/api/logs';
+    return getApiData(await fetch(url), 'Failed to fetch system logs');
   },
 
   async clearLogs(): Promise<void> {
-    const res = await fetch('/api/logs/clear', { method: 'POST' });
-    if (!res.ok) throw new Error('Failed to clear logs');
+    await checkApiResponse(await fetch('/api/logs/clear', { method: 'POST' }), 'Failed to clear logs');
   },
 
   async sendRequest(requestText: string, selectedTool?: string): Promise<ExecuteRequestResult> {
-    const res = await fetch('/api/requests', {
+    return getApiData(await fetch('/api/requests', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ request: requestText, selectedTool })
-    });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      throw new Error(err.error || 'Failed to submit request to agent');
-    }
-    const json = await res.json();
-    return json.data;
+    }), 'Failed to submit request to agent');
   },
 
   async verifyDirect(tool: string, output: string, userPrompt?: string): Promise<TrustFlowVerifyResponse> {
-    const res = await fetch('/api/verify', {
+    return getApiData(await fetch('/api/verify', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ tool, output, userPrompt })
-    });
-    if (!res.ok) throw new Error('TrustFlow direct verification failed');
-    const json = await res.json();
-    return json.data;
+    }), 'TrustFlow direct verification failed');
   }
 };

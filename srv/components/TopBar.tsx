@@ -48,6 +48,22 @@ export const TopBar: React.FC<TopBarProps> = ({ metrics, onRefresh, isLoading })
           <span>System Online</span>
         </div>
 
+        {metrics && (
+          <div
+            title={metrics.databaseStatus === 'CONNECTED' ? 'Persistent PostgreSQL database' : 'Development in-memory store'}
+            className={
+              'hidden sm:flex items-center gap-2 px-3 py-1.5 rounded-full border text-xs font-bold ' +
+              (metrics.databaseStatus === 'CONNECTED'
+                ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                : 'bg-amber-50 text-amber-700 border-amber-200')
+            }
+          >
+            <span
+              className={'w-2 h-2 rounded-full ' + (metrics.databaseStatus === 'CONNECTED' ? 'bg-emerald-500' : 'bg-amber-500')} />
+            <span>{metrics.databaseStatus === 'CONNECTED' ? 'Database Connected' : 'Memory Only'}</span>
+          </div>
+        )}
+
         {/* Refresh Action */}
         <button
           onClick={onRefresh}

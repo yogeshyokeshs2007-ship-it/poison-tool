@@ -1,7 +1,10 @@
+import 'dotenv/config';
 import express, { Request, Response } from 'express';
 import { createServer as createViteServer } from 'vite';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { randomUUID } from 'node:crypto';
+import { dataStore, type SeedData } from './srv/db';
 import type {
   Decision,
   HistoryItem,
@@ -50,7 +53,7 @@ const toolsDirectory: ToolItem[] = [
   { id: 'connector', name: 'Connector', icon: '🔗', category: 'general', description: 'Webhook and event pipeline bridge', riskLevel: 'MEDIUM', requiresVerification: true, usageCount: 1 }
 ];
 
-let historyStore: HistoryItem[] = [
+const historySeed: HistoryItem[] = [
   {
     id: 'req_001',
     time: '10:24:10',
@@ -123,7 +126,7 @@ let historyStore: HistoryItem[] = [
   }
 ];
 
-let verificationRecords: VerificationRecord[] = [
+const verificationSeed: VerificationRecord[] = [
   {
     id: 'ver_001',
     time: '10:24:14',
@@ -186,7 +189,7 @@ let verificationRecords: VerificationRecord[] = [
   }
 ];
 
-let systemLogs: LogEntry[] = [
+const logSeed: LogEntry[] = [
   {
     id: 'log_01',
     time: '10:24:10',
@@ -237,7 +240,25 @@ let systemLogs: LogEntry[] = [
   }
 ];
 
-let reqCounter = 25;
+const seedData: SeedData = {
+  history: historySeed,
+  verifications: verificationSeed,
+  logs: logSeed
+};
+
+app.use('/api', (req: Request, _res: Response, next) => {
+  if (req.path === '/health' || req.path === '/tools' || req.path === '/verify') {
+    next();
+    return;
+  }
+  dataStore.initialize(seedData).then(() => next()).catch(next);
+});
+
+function asyncRoute(handler: (req: Request, res: Response) => Promise<void>) {
+  return (req: Request, res: Response, next: (error?: unknown) => void) => {
+    handler(req, res).catch(next);
+  };
+}
 
 // Helper: Format current HH:mm:ss
 function formatTime(): string {
@@ -358,222 +379,150 @@ function simulateToolExecution(toolName: string, query: string): { output: strin
 
 // ----------------- API ENDPOINTS -----------------
 
-// GET /api/metrics: Return system metrics & high-level indicators
-app.get('/api/metrics', (_req: Request, res: Response) => {
-  const total = historyStore.length + 19; // incorporate base baseline
-  const allowed = historyStore.filter(h => h.decision === 'ALLOW').length + 14;
-  const blocked = historyStore.filter(h => h.decision === 'BLOCK').length + 5;
-
+app.get('/api/metrics', asyncRoute(async (_req, res) => {
+  const history = await dataStore.getAll<HistoryItem>('history');
   const metrics: MetricData = {
-    totalRequests: total,
-    allowedRequests: allowed,
-    blockedRequests: blocked,
+    totalRequests: history.length + 19,
+    allowedRequests: history.filter((item) => item.decision === 'ALLOW').length + 14,
+    blockedRequests: history.filter((item) => item.decision === 'BLOCK').length + 5,
     toolsUsed: 12,
     systemStatus: 'ONLINE',
     member1Status: 'CONNECTED',
     member2Status: 'CONNECTED',
-    avgLatencyMs: 148
+    avgLatencyMs: 148,
+    databaseStatus: dataStore.mode === 'postgres' ? 'CONNECTED' : 'MEMORY'
   };
-
   res.json({ success: true, data: metrics });
-});
+}));
 
-// GET /api/tools: Return all agent tools
 app.get('/api/tools', (req: Request, res: Response) => {
-  const { category } = req.query;
-  let tools = [...toolsDirectory];
-
-  if (category && category !== 'all') {
-    tools = tools.filter(t => t.category === category);
-  }
-
+  const category = typeof req.query.category === 'string' ? req.query.category : '';
+  const tools = category && category !== 'all'
+    ? toolsDirectory.filter((tool) => tool.category === category)
+    : toolsDirectory;
   res.json({ success: true, count: tools.length, data: tools });
 });
 
-// GET /api/history: Return request history with optional search & filter
-app.get('/api/history', (req: Request, res: Response) => {
+app.get('/api/history', asyncRoute(async (req, res) => {
   const search = typeof req.query.search === 'string' ? req.query.search.toLowerCase() : '';
   const filter = typeof req.query.filter === 'string' ? req.query.filter.toUpperCase() : 'ALL';
   const tool = typeof req.query.tool === 'string' ? req.query.tool.toLowerCase() : '';
-
-  let results = [...historyStore];
+  let results = await dataStore.getAll<HistoryItem>('history');
 
   if (search) {
-    results = results.filter(
-      item =>
-        item.request.toLowerCase().includes(search) ||
-        item.tool.toLowerCase().includes(search) ||
-        item.id.toLowerCase().includes(search) ||
-        item.reason.toLowerCase().includes(search)
+    results = results.filter((item) =>
+      item.request.toLowerCase().includes(search) ||
+      item.tool.toLowerCase().includes(search) ||
+      item.id.toLowerCase().includes(search) ||
+      item.reason.toLowerCase().includes(search)
     );
   }
-
   if (filter === 'ALLOW' || filter === 'BLOCK') {
-    results = results.filter(item => item.decision === filter);
+    results = results.filter((item) => item.decision === filter);
   }
-
   if (tool && tool !== 'all') {
-    results = results.filter(item => item.tool.toLowerCase() === tool);
+    results = results.filter((item) => item.tool.toLowerCase() === tool);
   }
-
   res.json({ success: true, count: results.length, data: results });
-});
+}));
 
-// GET /api/history/:id: Return detail for a specific request
-app.get('/api/history/:id', (req: Request, res: Response) => {
-  const item = historyStore.find(h => h.id === req.params.id);
+app.get('/api/history/:id', asyncRoute(async (req, res) => {
+  const item = await dataStore.getById<HistoryItem>('history', req.params.id);
   if (!item) {
-    return res.status(404).json({ success: false, error: 'Request record not found' });
+    res.status(404).json({ success: false, error: 'Request record not found' });
+    return;
   }
-
-  // Security guarantee: If BLOCKED, output is never provided
-  const sanitized = {
-    ...item,
-    output: item.decision === 'BLOCK' ? null : item.output
-  };
-
-  const relatedVerification = verificationRecords.find(v => v.requestId === item.id);
-
+  const sanitized = { ...item, output: item.decision === 'BLOCK' ? null : item.output };
+  const verifications = await dataStore.getAll<VerificationRecord>('verifications');
+  const relatedVerification = verifications.find((record) => record.requestId === item.id);
   res.json({
     success: true,
-    data: {
-      ...sanitized,
-      verification: relatedVerification || null
-    }
+    data: { ...sanitized, verification: relatedVerification || null }
   });
-});
+}));
 
-// GET /api/verifications: TrustFlow audit logs
-app.get('/api/verifications', (_req: Request, res: Response) => {
-  res.json({ success: true, count: verificationRecords.length, data: verificationRecords });
-});
+app.get('/api/verifications', asyncRoute(async (_req, res) => {
+  const records = await dataStore.getAll<VerificationRecord>('verifications');
+  res.json({ success: true, count: records.length, data: records });
+}));
 
-// GET /api/logs: System and audit logs
-app.get('/api/logs', (req: Request, res: Response) => {
+app.get('/api/logs', asyncRoute(async (req, res) => {
   const level = typeof req.query.level === 'string' ? req.query.level.toUpperCase() : 'ALL';
-  let logs = [...systemLogs];
-
-  if (level !== 'ALL') {
-    logs = logs.filter(l => l.type === level);
-  }
-
+  let logs = await dataStore.getAll<LogEntry>('logs');
+  if (level !== 'ALL') logs = logs.filter((log) => log.type === level);
   res.json({ success: true, count: logs.length, data: logs });
-});
+}));
 
-// POST /api/logs/clear: Clear logs
-app.post('/api/logs/clear', (_req: Request, res: Response) => {
-  systemLogs = [];
+app.post('/api/logs/clear', asyncRoute(async (_req, res) => {
+  await dataStore.clear('logs');
   res.json({ success: true, message: 'Logs cleared successfully' });
-});
+}));
 
-// POST /api/verify: Dedicated TrustFlow /verify endpoint (Member 2 remote service spec)
 app.post('/api/verify', (req: Request, res: Response) => {
-  const { requestId, tool, output, userPrompt } = req.body;
-
+  const { tool, output, userPrompt } = req.body;
   if (!tool) {
-    return res.status(400).json({ success: false, error: 'Missing required field: tool' });
+    res.status(400).json({ success: false, error: 'Missing required field: tool' });
+    return;
   }
-
   const result = verifyWithTrustFlow(tool, output || '', userPrompt || '');
-  res.json({
-    success: true,
-    data: result
-  });
+  res.json({ success: true, data: result });
 });
 
-// POST /api/requests: End-to-end request dispatch (User -> Agent -> Planner -> Tool -> TrustFlow)
-app.post('/api/requests', (req: Request, res: Response) => {
+app.post('/api/requests', asyncRoute(async (req, res) => {
   const { request, selectedTool } = req.body;
-
   if (!request || typeof request !== 'string' || !request.trim()) {
-    return res.status(400).json({ success: false, error: 'Request prompt is required' });
+    res.status(400).json({ success: false, error: 'Request prompt is required' });
+    return;
   }
 
   const userQuery = request.trim();
-  const requestId = `req_${String(reqCounter++).padStart(3, '0')}`;
+  const requestId = 'req_' + randomUUID();
   const now = formatTime();
   const startTs = Date.now();
-
-  // 1. Planner chooses tool
   let chosenToolName = selectedTool;
   if (!chosenToolName) {
-    const q = userQuery.toLowerCase();
-    if (q.includes('weather')) chosenToolName = 'Weather';
-    else if (q.includes('calc') || q.includes('math') || q.includes('+') || q.includes('*')) chosenToolName = 'Calculator';
-    else if (q.includes('map') || q.includes('route') || q.includes('directions')) chosenToolName = 'Maps';
-    else if (q.includes('mail') || q.includes('email')) chosenToolName = 'Email';
-    else if (q.includes('doc') || q.includes('analyze') || q.includes('file') || q.includes('password') || q.includes('secret')) chosenToolName = 'Document Analyzer';
+    const query = userQuery.toLowerCase();
+    if (query.includes('weather')) chosenToolName = 'Weather';
+    else if (query.includes('calc') || query.includes('math') || query.includes('+') || query.includes('*')) chosenToolName = 'Calculator';
+    else if (query.includes('map') || query.includes('route') || query.includes('directions')) chosenToolName = 'Maps';
+    else if (query.includes('mail') || query.includes('email')) chosenToolName = 'Email';
+    else if (query.includes('doc') || query.includes('analyze') || query.includes('file') || query.includes('password') || query.includes('secret')) chosenToolName = 'Document Analyzer';
     else chosenToolName = 'Search';
   }
 
-  // 2. Simulated tool output
   const toolResult = simulateToolExecution(chosenToolName, userQuery);
-
-  // 3. TrustFlow verification call
   const verification = verifyWithTrustFlow(chosenToolName, toolResult.output, userQuery);
-
   const durationMs = Date.now() - startTs + verification.latencyMs;
-
-  // 4. Update logs
-  systemLogs.push({
-    id: `log_${Date.now()}_1`,
-    time: now,
-    type: 'INFO',
-    component: 'AGENT',
-    message: `User request received [${requestId}]: "${userQuery}"`,
-    timestamp: Date.now()
-  });
-
-  systemLogs.push({
-    id: `log_${Date.now()}_2`,
-    time: now,
-    type: 'INFO',
-    component: 'PLANNER',
-    message: `Planner selected tool: "${chosenToolName}" for intent resolution`,
-    timestamp: Date.now() + 100
-  });
-
-  systemLogs.push({
-    id: `log_${Date.now()}_3`,
-    time: now,
-    type: 'INFO',
-    component: 'TOOL',
-    message: `Tool "${chosenToolName}" executed; generated untrusted output buffer`,
-    timestamp: Date.now() + 200
-  });
-
-  systemLogs.push({
-    id: `log_${Date.now()}_4`,
-    time: now,
-    type: verification.decision === 'ALLOW' ? 'SUCCESS' : 'BLOCK',
-    component: 'TRUSTFLOW',
-    message: `TrustFlow /verify decision: ${verification.decision} (Reason: ${verification.reason})`,
-    timestamp: Date.now() + 300
-  });
-
-  if (verification.decision === 'BLOCK') {
-    systemLogs.push({
-      id: `log_${Date.now()}_5`,
-      time: now,
-      type: 'BLOCK',
-      component: 'AGENT',
-      message: `SECURITY ENFORCED: Output for [${requestId}] blocked and strictly withheld from user`,
-      timestamp: Date.now() + 400
-    });
-  } else {
-    systemLogs.push({
-      id: `log_${Date.now()}_6`,
-      time: now,
-      type: 'INFO',
-      component: 'AGENT',
-      message: `Verified output for [${requestId}] delivered to user`,
-      timestamp: Date.now() + 400
-    });
-  }
-
-  // 5. Save verification record
+  const logTime = Date.now();
+  const requestLogs: LogEntry[] = [
+    {
+      id: 'log_' + randomUUID(), time: now, type: 'INFO', component: 'AGENT',
+      message: 'User request received [' + requestId + ']: "' + userQuery + '"', timestamp: logTime
+    },
+    {
+      id: 'log_' + randomUUID(), time: now, type: 'INFO', component: 'PLANNER',
+      message: 'Planner selected tool: "' + chosenToolName + '" for intent resolution', timestamp: logTime + 1
+    },
+    {
+      id: 'log_' + randomUUID(), time: now, type: 'INFO', component: 'TOOL',
+      message: 'Tool "' + chosenToolName + '" executed; generated untrusted output buffer', timestamp: logTime + 2
+    },
+    {
+      id: 'log_' + randomUUID(), time: now,
+      type: verification.decision === 'ALLOW' ? 'SUCCESS' : 'BLOCK', component: 'TRUSTFLOW',
+      message: 'TrustFlow /verify decision: ' + verification.decision + ' (Reason: ' + verification.reason + ')', timestamp: logTime + 3
+    },
+    {
+      id: 'log_' + randomUUID(), time: now,
+      type: verification.decision === 'BLOCK' ? 'BLOCK' : 'INFO', component: 'AGENT',
+      message: verification.decision === 'BLOCK'
+        ? 'SECURITY ENFORCED: Output for [' + requestId + '] blocked and strictly withheld from user'
+        : 'Verified output for [' + requestId + '] delivered to user',
+      timestamp: logTime + 4
+    }
+  ];
   const verRecord: VerificationRecord = {
-    id: `ver_${String(verificationRecords.length + 1).padStart(3, '0')}`,
+    id: 'ver_' + randomUUID(),
     time: now,
     requestId,
     tool: chosenToolName,
@@ -582,11 +531,8 @@ app.post('/api/requests', (req: Request, res: Response) => {
     reason: verification.reason,
     latencyMs: verification.latencyMs,
     verifiedBy: verification.verifiedBy,
-    timestamp: Date.now()
+    timestamp: logTime
   };
-  verificationRecords.unshift(verRecord);
-
-  // 6. Save history record
   const historyItem: HistoryItem = {
     id: requestId,
     time: now,
@@ -596,43 +542,67 @@ app.post('/api/requests', (req: Request, res: Response) => {
     decision: verification.decision,
     reason: verification.reason,
     status: 'Completed',
-    output: verification.decision === 'ALLOW' ? toolResult.output : null, // NEVER exposed on block
+    output: verification.decision === 'ALLOW' ? toolResult.output : null,
     durationMs,
-    plannerReasoning: `Planner matched query to ${chosenToolName}. Tool output passed to TrustFlow remote verifier.`,
-    timestamp: Date.now()
+    plannerReasoning: 'Planner matched query to ' + chosenToolName + '. Tool output passed to TrustFlow remote verifier.',
+    timestamp: logTime
   };
-  historyStore.unshift(historyItem);
 
+  await dataStore.insertMany([
+    { kind: 'history', record: historyItem },
+    { kind: 'verifications', record: verRecord },
+    ...requestLogs.map((record) => ({ kind: 'logs' as const, record }))
+  ]);
   res.json({
     success: true,
     data: {
       record: historyItem,
       verification,
       steps: [
-        { step: 1, name: 'Received', status: 'done', info: `${now} • Request captured` },
-        { step: 2, name: 'Planning', status: 'done', info: `${now} • Planner assigned ${chosenToolName}` },
-        { step: 3, name: 'Tool Execution', status: 'done', info: `${now} • Raw output collected` },
-        { step: 4, name: 'Verification', status: 'done', info: `${now} • TrustFlow /verify evaluated` },
-        { step: 5, name: 'Decision', status: 'done', info: `${now} • Verdict: ${verification.decision}` },
-        { step: 6, name: 'Complete', status: 'done', info: `${now} • ${verification.decision === 'ALLOW' ? 'Output delivered' : 'Output shielded'}` }
+        { step: 1, name: 'Received', status: 'done', info: now + ' - Request captured' },
+        { step: 2, name: 'Planning', status: 'done', info: now + ' - Planner assigned ' + chosenToolName },
+        { step: 3, name: 'Tool Execution', status: 'done', info: now + ' - Raw output collected' },
+        { step: 4, name: 'Verification', status: 'done', info: now + ' - TrustFlow /verify evaluated' },
+        { step: 5, name: 'Decision', status: 'done', info: now + ' - Verdict: ' + verification.decision },
+        { step: 6, name: 'Complete', status: 'done', info: now + ' - ' + (verification.decision === 'ALLOW' ? 'Output delivered' : 'Output shielded') }
       ]
     }
   });
-});
+}));
 
-// POST /api/reset: Reset store to demo defaults
-app.post('/api/reset', (_req: Request, res: Response) => {
-  reqCounter = 26;
+app.post('/api/reset', asyncRoute(async (_req, res) => {
+  await dataStore.reset(seedData);
   res.json({ success: true, message: 'Data reset successfully' });
-});
+}));
 
-// Health check endpoint
-app.get('/api/health', (_req: Request, res: Response) => {
-  res.json({ status: 'OK', uptime: process.uptime(), timestamp: new Date().toISOString() });
+app.get('/api/health', asyncRoute(async (_req, res) => {
+  if (dataStore.mode === 'not-configured') {
+    res.status(503).json({ status: 'DEGRADED', database: 'NOT_CONFIGURED' });
+    return;
+  }
+  await dataStore.initialize(seedData);
+  await dataStore.checkConnection();
+  res.json({
+    status: 'OK',
+    database: dataStore.mode === 'postgres' ? 'CONNECTED' : 'MEMORY',
+    uptime: process.uptime(),
+    timestamp: new Date().toISOString()
+  });
+}));
+
+app.use((error: unknown, _req: Request, res: Response, _next: (error?: unknown) => void) => {
+  const message = error instanceof Error ? error.message : 'Unknown backend error';
+  console.error('[API] Request failed:', message);
+  const missingDatabase = message.includes('DATABASE_URL is required');
+  res.status(missingDatabase ? 503 : 500).json({
+    success: false,
+    error: missingDatabase ? message : 'The backend could not complete the request.'
+  });
 });
 
 // Server Initialization with Vite dev middleware
 async function startServer() {
+  await dataStore.initialize(seedData);
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
       server: { middlewareMode: true },
@@ -651,4 +621,11 @@ async function startServer() {
   });
 }
 
-startServer();
+export default app;
+
+if (process.env.VERCEL !== '1') {
+  startServer().catch((error: unknown) => {
+    console.error('[TrustFlow General Agent Server] startup failed:', error);
+    process.exitCode = 1;
+  });
+}

@@ -67,11 +67,11 @@ export default function App() {
     try {
       setIsLoading(true);
       const [metricsData, toolsData, historyData, verificationsData, logsData] = await Promise.all([
-        api.getMetrics().catch(() => null),
-        api.getTools().catch(() => []),
-        api.getHistory().catch(() => []),
-        api.getVerifications().catch(() => []),
-        api.getLogs().catch(() => [])
+        api.getMetrics(),
+        api.getTools(),
+        api.getHistory(),
+        api.getVerifications(),
+        api.getLogs()
       ]);
 
       if (metricsData) setMetrics(metricsData);
@@ -79,8 +79,9 @@ export default function App() {
       setHistory(historyData);
       setVerifications(verificationsData);
       setLogs(logsData);
-    } catch (err: any) {
-      showToast('Error synchronizing with backend: ' + err.message, 'error');
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Unknown backend error';
+      showToast('Error synchronizing with backend: ' + message, 'error');
     } finally {
       setIsLoading(false);
     }
@@ -161,8 +162,8 @@ export default function App() {
 
       // Re-fetch state
       await loadData();
-    } catch (err: any) {
-      showToast(err.message || 'Execution failed', 'error');
+    } catch (error: unknown) {
+      showToast(error instanceof Error ? error.message : 'Execution failed', 'error');
       setSteps(defaultSteps);
     } finally {
       setIsProcessing(false);
